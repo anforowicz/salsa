@@ -30,8 +30,36 @@ pub(crate) fn query_group(args: TokenStream, input: TokenStream) -> TokenStream 
 
     let trait_vis = input.vis;
     let trait_name = input.ident;
-    let _generics = input.generics.clone();
-    let dyn_db = quote! { dyn #trait_name };
+
+    // Decompose generics into smaller parts.
+    let generics = input.generics.clone();
+    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
+    // CODE REVIEW PLEASE:
+    // CONTEXT: `tests/lru.rs` depends on being able to call `GetQuery.in_db_mut(...)`.  This works
+    // when `GetQuery` is defined as `struct GetQuery;` (in that case `GetQuery` is interpreted as
+    // the value of `GetQuery` struct.  This doesn't work when `GetQuery` is defined as `struct
+    // GetQuery{}` (in that case `GetQuery` is interpreted as a type name and the callsite would
+    // need to be changed to `GetQuery{}.in_db_mut(...)`.
+    // THEREFORE: `empty_struct_body_with_maybe_phantom_data`... (rather than just
+    // `phantom_data_field` that may be an empty TokenStream).
+    let empty_struct_body_with_maybe_phantom_data = {
+        let mut tuple_subtypes = vec![];
+        for lifetime in generics.lifetimes() {
+            tuple_subtypes.push(quote! { & #lifetime mut () });
+        }
+        for type_param in generics.type_params() {
+            tuple_subtypes.push(quote! { #type_param });
+        }
+        if generics.const_params().next().is_some() {
+            panic!("Const-generic parameters are not supported");
+        }
+        match tuple_subtypes.as_slice() {
+            [] => quote! { ; },
+            [t] => quote! { { _phantom_data: std::marker::PhantomData<#t> } },
+            ts @ [..] => quote! { { _phantom_data: std::marker::PhantomData< (  #( #ts ),*  )> } },
+        }
+    };
+    let dyn_db = quote! { dyn #trait_name #ty_generics };
 
     // Decompose the trait into the corresponding queries.
     let mut queries = vec![];
@@ -216,7 +244,10 @@ pub(crate) fn query_group(args: TokenStream, input: TokenStream) -> TokenStream 
             query.keys.iter().map(|(pat, ty)| (pat, ty)).unzip();
         let value = &query.value;
         let fn_name = &query.fn_name;
-        let qt = &query.query_type;
+        let qt = {
+            let ty = &query.query_type;
+            quote! { #ty #ty_generics }
+        };
         let attrs = &query.attrs;
 
         query_fn_declarations.extend(quote! {
@@ -244,7 +275,7 @@ pub(crate) fn query_group(args: TokenStream, input: TokenStream) -> TokenStream 
                 // query crate. Our experiments revealed that this makes a big
                 // difference in total compilation time in rust-analyzer, though
                 // it's not totally obvious why that should be.
-                fn __shim(db: &(dyn #trait_name + '_),  #(#key_names: #keys),*) -> #value {
+                fn __shim #impl_generics(db: &(dyn #trait_name #ty_generics + '_),  #(#key_names: #keys),*) -> #value #where_clause {
                     salsa::plumbing::get_query_table::<#qt>(db).get((#(#key_names),*))
                 }
                 __shim(self, #(#key_names),*)
@@ -315,21 +346,21 @@ pub(crate) fn query_group(args: TokenStream, input: TokenStream) -> TokenStream 
 
             query_fn_definitions.extend(quote! {
                 fn #set_fn_name(&mut self, #(#key_names: #keys,)* value__: #value) {
-                    fn __shim(db: &mut dyn #trait_name, #(#key_names: #keys,)* value__: #value) {
+                    fn __shim #impl_generics(db: &mut dyn #trait_name #ty_generics, #(#key_names: #keys,)* value__: #value) #where_clause {
                         salsa::plumbing::get_query_table_mut::<#qt>(db).set((#(#key_names),*), value__)
                     }
                     __shim(self, #(#key_names,)* value__)
                 }
 
                 fn #set_with_durability_fn_name(&mut self, #(#key_names: #keys,)* value__: #value, durability__: salsa::Durability) {
-                    fn __shim(db: &mut dyn #trait_name, #(#key_names: #keys,)* value__: #value, durability__: salsa::Durability) {
+                    fn __shim #impl_generics(db: &mut dyn #trait_name #ty_generics, #(#key_names: #keys,)* value__: #value, durability__: salsa::Durability) #where_clause {
                         salsa::plumbing::get_query_table_mut::<#qt>(db).set_with_durability((#(#key_names),*), value__, durability__)
                     }
                     __shim(self, #(#key_names,)* value__ ,durability__)
                 }
 
                 fn #remove_fn_name(&mut self, #(#key_names: #keys,)*) -> #value {
-                    fn __shim(db: &mut dyn #trait_name, #(#key_names: #keys,)*) -> #value {
+                    fn __shim #impl_generics(db: &mut dyn #trait_name #ty_generics, #(#key_names: #keys,)*) -> #value #where_clause {
                         salsa::plumbing::get_query_table_mut::<#qt>(db).remove((#(#key_names),*))
                     }
                     __shim(self, #(#key_names,)*)
@@ -348,10 +379,11 @@ pub(crate) fn query_group(args: TokenStream, input: TokenStream) -> TokenStream 
         let bounds = &input.supertraits;
         quote! {
             #(#trait_attrs)*
-            #trait_vis trait #trait_name :
+            #trait_vis trait #trait_name #ty_generics :
             salsa::Database +
-            salsa::plumbing::HasQueryGroup<#group_struct> +
+            salsa::plumbing::HasQueryGroup<#group_struct #ty_generics> +
             #bounds
+            #where_clause
             {
                 #query_fn_declarations
             }
@@ -361,24 +393,45 @@ pub(crate) fn query_group(args: TokenStream, input: TokenStream) -> TokenStream 
     // Emit the query group struct and impl of `QueryGroup`.
     output.extend(quote! {
         /// Representative struct for the query group.
-        #trait_vis struct #group_struct { }
+        #trait_vis struct #group_struct #impl_generics #where_clause
+            #empty_struct_body_with_maybe_phantom_data
 
-        impl salsa::plumbing::QueryGroup for #group_struct
+        impl #impl_generics salsa::plumbing::QueryGroup for #group_struct #ty_generics #where_clause
         {
             type DynDb = #dyn_db;
-            type GroupStorage = #group_storage;
+            type GroupStorage = #group_storage #ty_generics;
         }
     });
 
     // Emit an impl of the trait
+    let db_generics = {
+        let mut result = generics.clone();
+        result.lt_token = Some(Default::default());
+        // TODO: hygiene: Avoid hardcoding `DB` - this can conflict with `generics` provided by the
+        // user of our macro.
+        result.params.push(parse_quote! { DB });
+        result.gt_token = Some(Default::default());
+        result.where_clause = Some({
+            let bounds = input.supertraits;
+            let mut new_where_clause: syn::WhereClause = parse_quote! {
+                where
+                    DB: #bounds,
+                    DB: salsa::Database,
+                    DB: salsa::plumbing::HasQueryGroup<#group_struct #ty_generics>,
+            };
+            if let Some(old_where_clause) = result.where_clause {
+                new_where_clause
+                    .predicates
+                    .extend(old_where_clause.predicates);
+            }
+            new_where_clause
+        });
+        result
+    };
+    let (db_impl_generics, _ty_generics, db_where_clause) = db_generics.split_for_impl();
     output.extend({
-        let bounds = input.supertraits;
         quote! {
-            impl<DB> #trait_name for DB
-            where
-                DB: #bounds,
-                DB: salsa::Database,
-                DB: salsa::plumbing::HasQueryGroup<#group_struct>,
+            impl #db_impl_generics #trait_name #ty_generics for DB #db_where_clause
             {
                 #query_fn_definitions
             }
@@ -392,9 +445,22 @@ pub(crate) fn query_group(args: TokenStream, input: TokenStream) -> TokenStream 
     };
 
     // Emit the query types.
+    let db_lifetime_generics = {
+        let mut result = generics.clone();
+        result.lt_token = Some(Default::default());
+        // TODO: hygiene: Avoid hardcoding 'db - this can conflict with `generics` provided by the
+        // user of our macro.
+        result.params.push(parse_quote! { 'db });
+        result.gt_token = Some(Default::default());
+        result
+    };
+    let (db_lifetime_impl_generics, _, _) = db_lifetime_generics.split_for_impl();
     for (query, query_index) in non_transparent_queries().zip(0_u16..) {
         let fn_name = &query.fn_name;
-        let qt = &query.query_type;
+        let qt = {
+            let ty = &query.query_type;
+            quote! { #ty #ty_generics }
+        };
 
         let storage = match &query.storage {
             QueryStorage::Memoized => quote!(salsa::plumbing::MemoizedStorage<Self>),
@@ -415,14 +481,15 @@ pub(crate) fn query_group(args: TokenStream, input: TokenStream) -> TokenStream 
         // Emit the query struct and implement the Query trait on it.
         output.extend(quote! {
             #[derive(Default, Debug)]
-            #trait_vis struct #qt;
+            #trait_vis struct #qt #where_clause
+                #empty_struct_body_with_maybe_phantom_data
         });
 
         output.extend(quote! {
-            impl #qt {
+            impl #impl_generics #qt #where_clause {
                 /// Get access to extra methods pertaining to this query.
                 /// You can also use it to invoke this query.
-                #trait_vis fn in_db(self, db: &#dyn_db) -> salsa::QueryTable<'_, Self>
+                #trait_vis fn in_db<'db>(self, db: &'db #dyn_db) -> salsa::QueryTable<'db, Self>
                 {
                     salsa::plumbing::get_query_table::<#qt>(db)
                 }
@@ -430,7 +497,7 @@ pub(crate) fn query_group(args: TokenStream, input: TokenStream) -> TokenStream 
         });
 
         output.extend(quote! {
-            impl #qt {
+            impl #impl_generics #qt #where_clause {
                 /// Like `in_db`, but gives access to methods for setting the
                 /// value of an input. Not applicable to derived queries.
                 ///
@@ -462,21 +529,21 @@ pub(crate) fn query_group(args: TokenStream, input: TokenStream) -> TokenStream 
                 /// thus allowing the `set` to succeed. Otherwise, long-running
                 /// computations may lead to "starvation", meaning that the
                 /// thread attempting to `set` has to wait a long, long time. =)
-                #trait_vis fn in_db_mut(self, db: &mut #dyn_db) -> salsa::QueryTableMut<'_, Self>
+                #trait_vis fn in_db_mut<'db>(self, db: &'db mut #dyn_db) -> salsa::QueryTableMut<'db, Self>
                 {
                     salsa::plumbing::get_query_table_mut::<#qt>(db)
                 }
             }
 
-            impl<'d> salsa::QueryDb<'d> for #qt
+            impl #db_lifetime_impl_generics salsa::QueryDb<'db> for #qt #where_clause
             {
-                type DynDb = #dyn_db + 'd;
-                type Group = #group_struct;
-                type GroupStorage = #group_storage;
+                type DynDb = #dyn_db + 'db;
+                type Group = #group_struct #ty_generics;
+                type GroupStorage = #group_storage #ty_generics;
             }
 
             // ANCHOR:Query_impl
-            impl salsa::Query for #qt
+            impl #impl_generics salsa::Query for #qt #where_clause
             {
                 type Key = (#(#keys),*);
                 type Value = #value;
@@ -535,7 +602,7 @@ pub(crate) fn query_group(args: TokenStream, input: TokenStream) -> TokenStream 
 
             output.extend(quote_spanned! {span=>
                 // ANCHOR:QueryFunction_impl
-                impl salsa::plumbing::QueryFunction for #qt
+                impl #impl_generics salsa::plumbing::QueryFunction for #qt #where_clause
                 {
                     fn execute(db: &<Self as salsa::QueryDb<'_>>::DynDb, #key_pattern: <Self as salsa::Query>::Key)
                         -> <Self as salsa::Query>::Value {
@@ -591,12 +658,12 @@ pub(crate) fn query_group(args: TokenStream, input: TokenStream) -> TokenStream 
 
     // Emit query group storage struct
     output.extend(quote! {
-        #trait_vis struct #group_storage {
+        #trait_vis struct #group_storage #impl_generics #where_clause {
             #storage_fields
         }
 
         // ANCHOR:group_storage_new
-        impl #group_storage {
+        impl #impl_generics #group_storage #ty_generics #where_clause {
             #trait_vis fn new(group_index: u16) -> Self {
                 #group_storage {
                     #(
@@ -609,7 +676,7 @@ pub(crate) fn query_group(args: TokenStream, input: TokenStream) -> TokenStream 
         // ANCHOR_END:group_storage_new
 
         // ANCHOR:group_storage_methods
-        impl #group_storage {
+        impl #impl_generics #group_storage #ty_generics #where_clause {
             #trait_vis fn fmt_index(
                 &self,
                 db: &(#dyn_db + '_),

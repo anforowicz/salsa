@@ -13,6 +13,8 @@ pub(crate) fn database(args: TokenStream, input: TokenStream) -> TokenStream {
     let query_groups = &args.query_groups;
     let database_name = &input.ident;
     let visibility = &input.vis;
+    let generics = input.generics.clone();
+    let (impl_generics, ty_generics, where_clause) = generics.split_for_impl();
     let db_storage_field = quote! { storage };
 
     let mut output = proc_macro2::TokenStream::new();
@@ -30,7 +32,7 @@ pub(crate) fn database(args: TokenStream, input: TokenStream) -> TokenStream {
         .iter()
         .map(|QueryGroup { group_path }| {
             quote! {
-                <#group_path as salsa::plumbing::QueryGroup>::GroupStorage
+                <#group_path #ty_generics as salsa::plumbing::QueryGroup>::GroupStorage
             }
         })
         .collect();
@@ -60,9 +62,31 @@ pub(crate) fn database(args: TokenStream, input: TokenStream) -> TokenStream {
             #group_name_snake: #group_storage::new(#group_index),
         });
 
+        // CODE REVIEW PLEASE:
+        // Current code assumes that *all* generic parameters of the Database struct
+        // are used in each and every query group.  For example, this disallows something like:
+        //
+        //  #[salsa::query_group(Storage1)]
+        //  trait QueryGroup1<T1> {
+        //      #[salsa::input]
+        //      fn input1(&self) -> T1;
+        //  }
+        //
+        //  #[salsa::query_group(Storage2)]
+        //  trait QueryGroup2<T2> {
+        //      #[salsa::input]
+        //      fn input2(&self) -> T2;
+        //  }
+        //
+        //  #[salsa::database(Storage1, Storage2)]  // Storage1<T1>, Storage2<T2> ???
+        //  #[derive(Default)]
+        //  struct DatabaseStruct<T1, T2> {
+        //      storage: salsa::Storage<Self>,
+        //  }
+
         // ANCHOR:HasQueryGroup
         has_group_impls.extend(quote! {
-            impl salsa::plumbing::HasQueryGroup<#group_path> for #database_name {
+            impl #impl_generics salsa::plumbing::HasQueryGroup<#group_path #ty_generics> for #database_name #ty_generics #where_clause {
                 fn group_storage(&self) -> &#group_storage {
                     &self.#db_storage_field.query_store().#group_name_snake
                 }
@@ -79,11 +103,11 @@ pub(crate) fn database(args: TokenStream, input: TokenStream) -> TokenStream {
     // create group storage wrapper struct
     output.extend(quote! {
         #[doc(hidden)]
-        #visibility struct __SalsaDatabaseStorage {
+        #visibility struct __SalsaDatabaseStorage #impl_generics #where_clause {
             #storage_fields
         }
 
-        impl Default for __SalsaDatabaseStorage {
+        impl #impl_generics Default for __SalsaDatabaseStorage #ty_generics #where_clause {
             fn default() -> Self {
                 Self {
                     #storage_initializers
@@ -96,14 +120,14 @@ pub(crate) fn database(args: TokenStream, input: TokenStream) -> TokenStream {
     let mut database_data = vec![];
     for QueryGroup { group_path } in query_groups {
         database_data.push(quote! {
-            <#group_path as salsa::plumbing::QueryGroup>::GroupData
+            <#group_path #ty_generics as salsa::plumbing::QueryGroup>::GroupData
         });
     }
 
     // ANCHOR:DatabaseStorageTypes
     output.extend(quote! {
-        impl salsa::plumbing::DatabaseStorageTypes for #database_name {
-            type DatabaseStorage = __SalsaDatabaseStorage;
+        impl #impl_generics salsa::plumbing::DatabaseStorageTypes for #database_name #ty_generics #where_clause {
+            type DatabaseStorage = __SalsaDatabaseStorage #ty_generics;
         }
     });
     // ANCHOR_END:DatabaseStorageTypes
@@ -121,32 +145,32 @@ pub(crate) fn database(args: TokenStream, input: TokenStream) -> TokenStream {
         fmt_ops.extend(quote! {
             #group_index => {
                 let storage: &#group_storage =
-                    <Self as salsa::plumbing::HasQueryGroup<#group_path>>::group_storage(self);
+                    <Self as salsa::plumbing::HasQueryGroup<#group_path #ty_generics>>::group_storage(self);
                 storage.fmt_index(self, input, fmt)
             }
         });
         maybe_changed_ops.extend(quote! {
             #group_index => {
                 let storage: &#group_storage =
-                    <Self as salsa::plumbing::HasQueryGroup<#group_path>>::group_storage(self);
+                    <Self as salsa::plumbing::HasQueryGroup<#group_path #ty_generics>>::group_storage(self);
                 storage.maybe_changed_after(self, input, revision)
             }
         });
         cycle_recovery_strategy_ops.extend(quote! {
             #group_index => {
                 let storage: &#group_storage =
-                    <Self as salsa::plumbing::HasQueryGroup<#group_path>>::group_storage(self);
+                    <Self as salsa::plumbing::HasQueryGroup<#group_path #ty_generics>>::group_storage(self);
                 storage.cycle_recovery_strategy(self, input)
             }
         });
         for_each_ops.extend(quote! {
             let storage: &#group_storage =
-                <Self as salsa::plumbing::HasQueryGroup<#group_path>>::group_storage(self);
+                <Self as salsa::plumbing::HasQueryGroup<#group_path #ty_generics>>::group_storage(self);
             storage.for_each_query(runtime, &mut op);
         });
     }
     output.extend(quote! {
-        impl salsa::plumbing::DatabaseOps for #database_name {
+        impl #impl_generics salsa::plumbing::DatabaseOps for #database_name #ty_generics #where_clause {
             fn ops_database(&self) -> &dyn salsa::Database {
                 self
             }
