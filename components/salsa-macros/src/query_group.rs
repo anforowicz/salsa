@@ -45,6 +45,9 @@ pub(crate) fn query_group(args: TokenStream, input: TokenStream) -> TokenStream 
     let empty_struct_body_with_maybe_phantom_data = {
         let mut tuple_subtypes = vec![];
         for lifetime in generics.lifetimes() {
+            // TODO(lukasza): I hope that once the lifetime problems are solved, then it will
+            // be obvious if we want `&'a ()` vs `&'a mut ()` (i.e. I expect that only one of them
+            // will work).
             tuple_subtypes.push(quote! { & #lifetime mut () });
         }
         for type_param in generics.type_params() {
