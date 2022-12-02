@@ -45,10 +45,10 @@ impl<K, V> TableEntry<K, V> {
     }
 }
 
-impl<Q> DebugQueryTable for QueryTable<'_, Q>
+impl<'db, Q> DebugQueryTable for QueryTable<'db, Q>
 where
-    Q: Query,
-    Q::Storage: QueryStorageOps<Q>,
+    Q: Query<'db>,
+    Q::Storage: QueryStorageOps<'db, Q>,
 {
     type Key = Q::Key;
     type Value = Q::Value;

@@ -11,14 +11,14 @@ use crate::{
 
 use super::{memo::Memo, DerivedKeyIndex, DerivedStorage, MemoizationPolicy};
 
-impl<Q, MP> DerivedStorage<Q, MP>
+impl<'db, Q, MP> DerivedStorage<'db, Q, MP>
 where
-    Q: QueryFunction,
-    MP: MemoizationPolicy<Q>,
+    Q: QueryFunction<'db>,
+    MP: MemoizationPolicy<'db, Q>,
 {
     pub(super) fn maybe_changed_after(
         &self,
-        db: &<Q as QueryDb<'_>>::DynDb,
+        db: &<Q as QueryDb<'db>>::DynDb,
         key_index: DerivedKeyIndex,
         revision: Revision,
     ) -> bool {
@@ -55,7 +55,7 @@ where
 
     fn maybe_changed_after_cold(
         &self,
-        db: &<Q as QueryDb<'_>>::DynDb,
+        db: &<Q as QueryDb<'db>>::DynDb,
         key_index: DerivedKeyIndex,
         revision: Revision,
     ) -> Option<bool> {
@@ -102,7 +102,7 @@ where
     #[inline]
     pub(super) fn shallow_verify_memo(
         &self,
-        db: &<Q as QueryDb<'_>>::DynDb,
+        db: &<Q as QueryDb<'db>>::DynDb,
         runtime: &Runtime,
         database_key_index: DatabaseKeyIndex,
         memo: &Memo<Q::Value>,
@@ -140,7 +140,7 @@ where
     /// query is on the stack.
     pub(super) fn deep_verify_memo(
         &self,
-        db: &<Q as QueryDb<'_>>::DynDb,
+        db: &<Q as QueryDb<'db>>::DynDb,
         old_memo: &Memo<Q::Value>,
         active_query: &ActiveQueryGuard<'_>,
     ) -> bool {

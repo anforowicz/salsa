@@ -445,7 +445,7 @@ pub trait QueryDb<'d>: Sized {
 
 /// Trait implements by all of the "special types" associated with
 /// each of your queries.
-pub trait Query: Debug + Default + Sized + for<'d> QueryDb<'d> {
+pub trait Query<'d>: Debug + Default + Sized + QueryDb<'d> {
     /// Type that you you give as a parameter -- for queries with zero
     /// or more than one input, this will be a tuple.
     type Key: Clone + Debug + Hash + Eq;
@@ -465,12 +465,12 @@ pub trait Query: Debug + Default + Sized + for<'d> QueryDb<'d> {
 
     /// Exact storage for this query from the storage for its group.
     fn query_storage<'a>(
-        group_storage: &'a <Self as QueryDb<'_>>::GroupStorage,
+        group_storage: &'a <Self as QueryDb<'d>>::GroupStorage,
     ) -> &'a Arc<Self::Storage>;
 
     /// Exact storage for this query from the storage for its group.
     fn query_storage_mut<'a>(
-        group_storage: &'a <Self as QueryDb<'_>>::GroupStorage,
+        group_storage: &'a <Self as QueryDb<'d>>::GroupStorage,
     ) -> &'a Arc<Self::Storage>;
 }
 
@@ -480,7 +480,7 @@ pub trait Query: Debug + Default + Sized + for<'d> QueryDb<'d> {
 /// [the `query` method]: trait.Database.html#method.query
 pub struct QueryTable<'me, Q>
 where
-    Q: Query,
+    Q: Query<'me>,
 {
     db: &'me <Q as QueryDb<'me>>::DynDb,
     storage: &'me Q::Storage,
@@ -488,8 +488,8 @@ where
 
 impl<'me, Q> QueryTable<'me, Q>
 where
-    Q: Query,
-    Q::Storage: QueryStorageOps<Q>,
+    Q: Query<'me>,
+    Q::Storage: QueryStorageOps<'me, Q>,
 {
     /// Constructs a new `QueryTable`.
     pub fn new(db: &'me <Q as QueryDb<'me>>::DynDb, storage: &'me Q::Storage) -> Self {
@@ -525,7 +525,7 @@ where
 /// [the `query_mut` method]: trait.Database.html#method.query_mut
 pub struct QueryTableMut<'me, Q>
 where
-    Q: Query + 'me,
+    Q: Query<'me> + 'me,
 {
     runtime: &'me mut Runtime,
     storage: &'me Q::Storage,
@@ -533,7 +533,7 @@ where
 
 impl<'me, Q> QueryTableMut<'me, Q>
 where
-    Q: Query,
+    Q: Query<'me>,
 {
     /// Constructs a new `QueryTableMut`.
     pub fn new(runtime: &'me mut Runtime, storage: &'me Q::Storage) -> Self {
@@ -549,7 +549,7 @@ where
     /// [the `query_mut` method]: trait.Database.html#method.query_mut
     pub fn set(&mut self, key: Q::Key, value: Q::Value)
     where
-        Q::Storage: plumbing::InputQueryStorageOps<Q>,
+        Q::Storage: plumbing::InputQueryStorageOps<'me, Q>,
     {
         self.set_with_durability(key, value, Durability::LOW);
     }
@@ -564,7 +564,7 @@ where
     /// [the `query_mut` method]: trait.Database.html#method.query_mut
     pub fn set_with_durability(&mut self, key: Q::Key, value: Q::Value, durability: Durability)
     where
-        Q::Storage: plumbing::InputQueryStorageOps<Q>,
+        Q::Storage: plumbing::InputQueryStorageOps<'me, Q>,
     {
         self.storage.set(self.runtime, &key, value, durability);
     }
@@ -582,7 +582,7 @@ where
     /// [the `query_mut` method]: trait.Database.html#method.query_mut
     pub fn remove(&mut self, key: Q::Key) -> Q::Value
     where
-        Q::Storage: plumbing::InputQueryStorageOps<Q>,
+        Q::Storage: plumbing::InputQueryStorageOps<'me, Q>,
     {
         self.storage.remove(self.runtime, &key)
     }
@@ -610,7 +610,7 @@ where
     /// pattern](https://salsa-rs.github.io/salsa/common_patterns/on_demand_inputs.html).
     pub fn invalidate(&mut self, key: &Q::Key)
     where
-        Q::Storage: plumbing::DerivedQueryStorageOps<Q>,
+        Q::Storage: plumbing::DerivedQueryStorageOps<'me, Q>,
     {
         self.storage.invalidate(self.runtime, key)
     }

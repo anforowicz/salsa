@@ -350,7 +350,7 @@ pub(crate) fn query_group(args: TokenStream, input: TokenStream) -> TokenStream 
             #(#trait_attrs)*
             #trait_vis trait #trait_name :
             salsa::Database +
-            salsa::plumbing::HasQueryGroup<#group_struct> +
+            salsa::plumbing::HasQueryGroup<#group_struct<'_>> +
             #bounds
             {
                 #query_fn_declarations
@@ -361,9 +361,9 @@ pub(crate) fn query_group(args: TokenStream, input: TokenStream) -> TokenStream 
     // Emit the query group struct and impl of `QueryGroup`.
     output.extend(quote! {
         /// Representative struct for the query group.
-        #trait_vis struct #group_struct { }
+        #trait_vis struct #group_struct<'db> { }
 
-        impl salsa::plumbing::QueryGroup for #group_struct
+        impl<'db> salsa::plumbing::QueryGroup<'db> for #group_struct<'db>
         {
             type DynDb = #dyn_db;
             type GroupStorage = #group_storage;
@@ -471,7 +471,7 @@ pub(crate) fn query_group(args: TokenStream, input: TokenStream) -> TokenStream 
             impl<'d> salsa::QueryDb<'d> for #qt
             {
                 type DynDb = #dyn_db + 'd;
-                type Group = #group_struct;
+                type Group = #group_struct<'d>;
                 type GroupStorage = #group_storage;
             }
 

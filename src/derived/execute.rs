@@ -8,10 +8,10 @@ use crate::{
 
 use super::{memo::Memo, DerivedStorage, MemoizationPolicy};
 
-impl<Q, MP> DerivedStorage<Q, MP>
+impl<'db, Q, MP> DerivedStorage<'db, Q, MP>
 where
-    Q: QueryFunction,
-    MP: MemoizationPolicy<Q>,
+    Q: QueryFunction<'db>,
+    MP: MemoizationPolicy<'db, Q>,
 {
     /// Executes the query function for the given `active_query`. Creates and stores
     /// a new memo with the result, backdated if possible. Once this completes,
@@ -24,7 +24,7 @@ where
     /// * `opt_old_memo`, the older memo, if any existed. Used for backdated.
     pub(super) fn execute(
         &self,
-        db: &<Q as QueryDb<'_>>::DynDb,
+        db: &<Q as QueryDb<'db>>::DynDb,
         active_query: ActiveQueryGuard<'_>,
         opt_old_memo: Option<Arc<Memo<Q::Value>>>,
     ) -> StampedValue<Q::Value> {

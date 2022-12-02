@@ -8,15 +8,15 @@ use crate::{
 
 use super::{DerivedKeyIndex, DerivedStorage, MemoizationPolicy};
 
-impl<Q, MP> DerivedStorage<Q, MP>
+impl<'db, Q, MP> DerivedStorage<'db, Q, MP>
 where
-    Q: QueryFunction,
-    MP: MemoizationPolicy<Q>,
+    Q: QueryFunction<'db>,
+    MP: MemoizationPolicy<'db, Q>,
 {
     #[inline]
     pub(super) fn fetch(
         &self,
-        db: &<Q as QueryDb<'_>>::DynDb,
+        db: &<Q as QueryDb<'db>>::DynDb,
         key_index: DerivedKeyIndex,
     ) -> Q::Value {
         db.unwind_if_cancelled();
@@ -44,7 +44,7 @@ where
     #[inline]
     fn compute_value(
         &self,
-        db: &<Q as QueryDb<'_>>::DynDb,
+        db: &<Q as QueryDb<'db>>::DynDb,
         key_index: DerivedKeyIndex,
     ) -> StampedValue<Q::Value> {
         loop {
@@ -60,7 +60,7 @@ where
     #[inline]
     fn fetch_hot(
         &self,
-        db: &<Q as QueryDb<'_>>::DynDb,
+        db: &<Q as QueryDb<'db>>::DynDb,
         key_index: DerivedKeyIndex,
     ) -> Option<StampedValue<Q::Value>> {
         let memo_guard = self.memo_map.get(key_index);
@@ -77,7 +77,7 @@ where
 
     fn fetch_cold(
         &self,
-        db: &<Q as QueryDb<'_>>::DynDb,
+        db: &<Q as QueryDb<'db>>::DynDb,
         key_index: DerivedKeyIndex,
     ) -> Option<StampedValue<Q::Value>> {
         let runtime = db.salsa_runtime();

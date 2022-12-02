@@ -27,19 +27,19 @@ mod sync;
 /// Memoized queries store the result plus a list of the other queries
 /// that they invoked. This means we can avoid recomputing them when
 /// none of those inputs have changed.
-pub type MemoizedStorage<Q> = DerivedStorage<Q, AlwaysMemoizeValue>;
+pub type MemoizedStorage<'db, Q> = DerivedStorage<'db, Q, AlwaysMemoizeValue>;
 
 /// "Dependency" queries just track their dependencies and not the
 /// actual value (which they produce on demand). This lessens the
 /// storage requirements.
-pub type DependencyStorage<Q> = DerivedStorage<Q, NeverMemoizeValue>;
+pub type DependencyStorage<'db, Q> = DerivedStorage<'db, Q, NeverMemoizeValue>;
 
 /// Handles storage where the value is 'derived' by executing a
 /// function (in contrast to "inputs").
-pub struct DerivedStorage<Q, MP>
+pub struct DerivedStorage<'db, Q, MP>
 where
-    Q: QueryFunction,
-    MP: MemoizationPolicy<Q>,
+    Q: QueryFunction<'db>,
+    MP: MemoizationPolicy<'db, Q>,
 {
     group_index: u16,
     lru: lru::Lru,
@@ -51,18 +51,18 @@ where
 
 type DerivedKeyIndex = u32;
 
-impl<Q, MP> std::panic::RefUnwindSafe for DerivedStorage<Q, MP>
+impl<'db, Q, MP> std::panic::RefUnwindSafe for DerivedStorage<'db, Q, MP>
 where
-    Q: QueryFunction,
-    MP: MemoizationPolicy<Q>,
+    Q: QueryFunction<'db>,
+    MP: MemoizationPolicy<'db, Q>,
     Q::Key: std::panic::RefUnwindSafe,
     Q::Value: std::panic::RefUnwindSafe,
 {
 }
 
-pub trait MemoizationPolicy<Q>: Send + Sync
+pub trait MemoizationPolicy<'db, Q>: Send + Sync
 where
-    Q: QueryFunction,
+    Q: QueryFunction<'db>,
 {
     fn should_memoize_value(key: &Q::Key) -> bool;
 
@@ -70,9 +70,9 @@ where
 }
 
 pub enum AlwaysMemoizeValue {}
-impl<Q> MemoizationPolicy<Q> for AlwaysMemoizeValue
+impl<'db, Q> MemoizationPolicy<'db, Q> for AlwaysMemoizeValue
 where
-    Q: QueryFunction,
+    Q: QueryFunction<'db>,
     Q::Value: Eq,
 {
     fn should_memoize_value(_key: &Q::Key) -> bool {
@@ -85,9 +85,9 @@ where
 }
 
 pub enum NeverMemoizeValue {}
-impl<Q> MemoizationPolicy<Q> for NeverMemoizeValue
+impl<'db, Q> MemoizationPolicy<'db, Q> for NeverMemoizeValue
 where
-    Q: QueryFunction,
+    Q: QueryFunction<'db>,
 {
     fn should_memoize_value(_key: &Q::Key) -> bool {
         false
@@ -98,10 +98,10 @@ where
     }
 }
 
-impl<Q, MP> DerivedStorage<Q, MP>
+impl<'db, Q, MP> DerivedStorage<'db, Q, MP>
 where
-    Q: QueryFunction,
-    MP: MemoizationPolicy<Q>,
+    Q: QueryFunction<'db>,
+    MP: MemoizationPolicy<'db, Q>,
 {
     fn database_key_index(&self, key_index: DerivedKeyIndex) -> DatabaseKeyIndex {
         DatabaseKeyIndex {
@@ -122,10 +122,10 @@ where
     }
 }
 
-impl<Q, MP> QueryStorageOps<Q> for DerivedStorage<Q, MP>
+impl<'db, Q, MP> QueryStorageOps<'db, Q> for DerivedStorage<'db, Q, MP>
 where
-    Q: QueryFunction,
-    MP: MemoizationPolicy<Q>,
+    Q: QueryFunction<'db>,
+    MP: MemoizationPolicy<'db, Q>,
 {
     const CYCLE_STRATEGY: crate::plumbing::CycleRecoveryStrategy = Q::CYCLE_STRATEGY;
 
@@ -142,7 +142,7 @@ where
 
     fn fmt_index(
         &self,
-        _db: &<Q as QueryDb<'_>>::DynDb,
+        _db: &<Q as QueryDb<'db>>::DynDb,
         index: DatabaseKeyIndex,
         fmt: &mut std::fmt::Formatter<'_>,
     ) -> std::fmt::Result {
@@ -153,7 +153,7 @@ where
 
     fn maybe_changed_after(
         &self,
-        db: &<Q as QueryDb<'_>>::DynDb,
+        db: &<Q as QueryDb<'db>>::DynDb,
         database_key_index: DatabaseKeyIndex,
         revision: Revision,
     ) -> bool {
@@ -162,12 +162,12 @@ where
         self.maybe_changed_after(db, key_index, revision)
     }
 
-    fn fetch(&self, db: &<Q as QueryDb<'_>>::DynDb, key: &Q::Key) -> Q::Value {
+    fn fetch(&self, db: &<Q as QueryDb<'db>>::DynDb, key: &Q::Key) -> Q::Value {
         let key_index = self.key_map.key_index_for_key(key);
         self.fetch(db, key_index)
     }
 
-    fn durability(&self, _db: &<Q as QueryDb<'_>>::DynDb, key: &Q::Key) -> Durability {
+    fn durability(&self, _db: &<Q as QueryDb<'db>>::DynDb, key: &Q::Key) -> Durability {
         let key_index = self.key_map.key_index_for_key(key);
         if let Some(memo) = self.memo_map.get(key_index) {
             memo.revisions.durability
@@ -176,7 +176,7 @@ where
         }
     }
 
-    fn entries<C>(&self, _db: &<Q as QueryDb<'_>>::DynDb) -> C
+    fn entries<C>(&self, _db: &<Q as QueryDb<'db>>::DynDb) -> C
     where
         C: std::iter::FromIterator<TableEntry<Q::Key, Q::Value>>,
     {
@@ -190,10 +190,10 @@ where
     }
 }
 
-impl<Q, MP> QueryStorageMassOps for DerivedStorage<Q, MP>
+impl<'db, Q, MP> QueryStorageMassOps for DerivedStorage<'db, Q, MP>
 where
-    Q: QueryFunction,
-    MP: MemoizationPolicy<Q>,
+    Q: QueryFunction<'db>,
+    MP: MemoizationPolicy<'db, Q>,
 {
     fn purge(&self) {
         self.lru.set_capacity(0);
@@ -201,20 +201,20 @@ where
     }
 }
 
-impl<Q, MP> LruQueryStorageOps for DerivedStorage<Q, MP>
+impl<'db, Q, MP> LruQueryStorageOps for DerivedStorage<'db, Q, MP>
 where
-    Q: QueryFunction,
-    MP: MemoizationPolicy<Q>,
+    Q: QueryFunction<'db>,
+    MP: MemoizationPolicy<'db, Q>,
 {
     fn set_lru_capacity(&self, new_capacity: usize) {
         self.lru.set_capacity(new_capacity);
     }
 }
 
-impl<Q, MP> DerivedQueryStorageOps<Q> for DerivedStorage<Q, MP>
+impl<'db, Q, MP> DerivedQueryStorageOps<'db, Q> for DerivedStorage<'db, Q, MP>
 where
-    Q: QueryFunction,
-    MP: MemoizationPolicy<Q>,
+    Q: QueryFunction<'db>,
+    MP: MemoizationPolicy<'db, Q>,
 {
     fn invalidate<S>(&self, runtime: &mut Runtime, key: &S)
     where
